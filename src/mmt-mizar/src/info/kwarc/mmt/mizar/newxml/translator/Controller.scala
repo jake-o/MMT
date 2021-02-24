@@ -9,10 +9,9 @@ import info.kwarc.mmt.api.objects._
 import info.kwarc.mmt.api.notations._
 import info.kwarc.mmt.api.presentation._
 import info.kwarc.mmt.api.uom.SimplificationUnit
-
 import info.kwarc.mmt.mizar.newxml._
 import foundations._
-import mmtwrapper.Mizar
+import mmtwrapper.{Mizar, MizarPatternInstance}
 
 import scala.collection._
 
@@ -36,10 +35,23 @@ object TranslationController {
   var currentThy : Theory = null
   var currentOutputBase : DPath = null
 
+  private var unresolvedDependencies : List[MPath] = Nil
+  def addUnresolvedDependency(dep: MPath) = if (unresolvedDependencies.contains(dep)) {} else {unresolvedDependencies +:= dep}
+  def getUnresolvedDependencies() = unresolvedDependencies
+
+  private var anonymousTheoremCount = 0
+  def incrementAnonymousTheoremCount() = {anonymousTheoremCount += 1}
+  def getAnonymousTheoremCount() = anonymousTheoremCount
+
+  private var identifyCount = 0
+  def incrementIdentifyCount() = {identifyCount += 1}
+  def getIdentifyCount() = identifyCount
+
   def currentBaseThy : Option[MPath] = Some(mmtwrapper.Mizar.MizarPatternsTh)
   def currentBaseThyFile = File("/home/user/Erlangen/MMT/content/MathHub/MMT/LATIN2/source/foundations/mizar/"+mmtwrapper.Mizar.MizarPatternsTh.name.toString+".mmt")
   def localPath : LocalName = LocalName(currentAid.toLowerCase())
-  def currentThyBase : DPath = TranslationController.currentOutputBase / localPath
+  def currentThyBase : DPath = currentOutputBase / localPath
+    //DPath(utils.URI(TranslationController.currentOutputBase.toString + localPath.toString))
   def currentTheoryPath : MPath = {
     val res = currentThyBase ? localPath
     assert (res == currentThy.path)
@@ -49,22 +61,57 @@ object TranslationController {
   def currentSource : String = mmtwrapper.Mizar.mathHubBase + "/source/" + currentAid.toLowerCase() + ".miz"
 
   def makeDocument() = {
-    val doc = new Document(currentThyBase, documents.FileLevel)
-    controller.add(doc)
+    val doc = new Document(currentThyBase)
     currentDoc = doc
+    controller.add(currentDoc)
     doc
   }
   def makeTheory() = {
     val thy = new Theory(currentThyBase, localPath, currentBaseThy, Theory.noParams, Theory.noBase)
     controller.add(thy)
     currentThy = thy
+    identifyCount = 0
+    anonymousTheoremCount = 0
     thy
   }
+  def getDependencies() : List[MPath] = {
+    var dependencies: List[MPath] = Nil
+    def isDependency(p: String) = p contains currentOutputBase.toString
+    def getDependencies(tm: Term) = tm.subobjects.map(_._2).filter({case OMS(p) => true case _ => false}).map({case OMS(p) => p})
+      .filter(p=>isDependency(p.toString))
+    currentThy.getDeclarations foreach {
+      case decl: Declaration =>
+        //val s = controller.presenter.asString(decl)
+        val deps: List[GlobalName] = if (isDependency(decl.toString())) {
+          decl match {
+            case MizarPatternInstance(_, _, args) => args flatMap getDependencies
+            case c: Constant =>
+              List(c.tp, c.df).flatMap(_ map(List(_)) getOrElse(Nil)) flatMap getDependencies
+            case _ => Nil
+          }
+        } else Nil
+        val depThs = deps.map(_.module)
+        dependencies = (dependencies ++ depThs).distinct
+    }
+    dependencies.filterNot(List(currentTheoryPath, TranslatorUtils.hiddenArt).contains _)
+  }
+  def includeDependencies() = {
+    val includes = getDependencies() map(PlainInclude(_, currentTheoryPath))
+    includes.reverse foreach {inc =>
+      try {
+        addFront(inc)
+      } catch {
+        case e: GetError =>
+          addUnresolvedDependency(inc.from.toMPath)
+          throw new TranslatingError("GetError while trying to include the dependent theory "+inc.from.toMPath+" of the translated theory "+inc.to.toMPath+": \n"+
+          "Please make sure the theory is translated (build with mizarxml-omdoc build target) and try again. ")
+      }
+    }
+  }
   def endMake() = {
+    includeDependencies()
     controller.endAdd(currentThy)
-    val doc = currentThy.asDocument
-    currentDoc = doc
-    controller.add(currentDoc)
+    currentDoc.add(MRef(currentDoc.path, currentThy.path))
     controller.endAdd(currentDoc)
   }
 
@@ -74,10 +121,19 @@ object TranslationController {
   def add(m: Module) : Unit = {
     controller.add(m)
   }
+  def addFront(inc: Structure) : Unit = {
+    controller.add(inc, AtBegin)
+  }
   def add(e : Declaration) : Unit = {
     val eC = complify(e)
-    //println(controller.presenter.asString(eC))
-    controller.add(eC)
+    try {
+      //println(eC.toString)
+      //println(controller.presenter.asString(eC))
+      controller.add(eC)
+    } catch {
+      case e: AddError =>
+        throw new TranslatingError("error adding declaration "+eC.name+", since a declaration of that name is already present. ")
+    }
   }
   private def complify(d: Declaration) = {
     val rules = RuleSet.collectRules(controller, Context(mmtwrapper.Mizar.MizarPatternsTh))

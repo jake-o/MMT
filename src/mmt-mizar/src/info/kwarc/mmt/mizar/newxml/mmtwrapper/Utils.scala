@@ -2,11 +2,10 @@ package info.kwarc.mmt.mizar.newxml.mmtwrapper
 
 import info.kwarc.mmt.api._
 import info.kwarc.mmt.api.objects._
-import info.kwarc.mmt.lf._
+import info.kwarc.mmt.api.uom.ConstantScala
+import info.kwarc.mmt.lf.{BinaryLFConstantScala, _}
 import info.kwarc.mmt.mizar.newxml.mmtwrapper.MizSeq._
 import info.kwarc.mmt.mizar.newxml.mmtwrapper.Mizar.{constant, constantName}
-import info.kwarc.mmt.mizar.newxml.translator.TranslationController
-
 
 object Mizar {
   val mmlBase = utils.URI("http", "oaff.mathweb.org") / "MML"
@@ -42,6 +41,7 @@ object Mizar {
       case "any" => TermsTh ? "term"
       case "set" => HiddenTh ? name
       case "sethood" => HiddenTh ? "sethood_property"
+      case "in" => HiddenTh ? "in"
       case "prop"=> PropositionsTh ? name
       case "mode" => TypesTh ? "tp"
       case "proof" => ProofsTh ? "ded"
@@ -49,7 +49,7 @@ object Mizar {
       case "and" => ConjunctionTh ? name
       case "or" => DisjunctionTh ? name
       case "eq" => EqualityTh ? "equal"
-      case "ineq" => HiddenTh ? "inequal"
+      case "neq" => HiddenTh ? "inequal"
       case "true" => TruthTh ? name
       case "false" => FalsityTh ? name
       case "not" => NegationTh ? name
@@ -59,7 +59,7 @@ object Mizar {
     }
   }
   object constant {
-    def apply(name: String): Term = OMID(constantName(name))
+    def apply(name: String): OMID = OMID(constantName(name))
 
     def unapply(tm: Term) = tm match {
       case OMID(gn:GlobalName) if (gn == constantName(gn.name.toString)) => Some(gn.name.toString)
@@ -74,28 +74,35 @@ object Mizar {
   def apply(f : Term, args : Term*) = ApplyGeneral(f, args.toList)
 
   def prop : Term = constant("prop")
-  //val any : Term = constant("any")
   def tp : Term = constant("tp")
   def set = constant("set")
+  def in = constant("in")
   def any =constant("any")
 
-  def is(t1 : Term, t2 : Term) = apply(constant("is"), t1, t2)
-  def be(t1 : Term, t2 : Term) = apply(constant("be"), t1, t2)
+  object is extends BinaryLFConstantScala(softTypedTermsTh, "is")
+  object be extends BinaryLFConstantScala(MizarTh, "be")
 
   def andCon = constantName("and")
-  def naryAndCon = constantName("nary_and")
-
-  def and(tms : List[Term]) : Term = apply(OMS(naryAndCon), (OMI(tms.length)::tms):_*)
-  def binaryAnd(a:Term, b:Term) : Term = apply(OMS(andCon),List(a,b):_*)
+  object naryAndSym extends BinaryLFConstantScala(MizarTh, "nary_and")
+  object And {
+    def apply(tms : List[Term]) : Term = naryAndSym(OMI(tms.length), Sequence(tms))
+    def unapply(t: Term) = t match {
+      case naryAndSym(OMI(n), Sequence(tms)) if (tms.length == n) => Some(tms)
+      case _ => None
+    }
+  }
+  def binaryAnd(a:Term, b:Term) : Term = And(List(a,b))
   def orCon = constantName("or")
-  def naryOrCon = constantName("nary_or")
-  def or(tms : List[Term]) : Term = apply(OMS(naryOrCon), (OMI(tms.length)::tms):_*)
-  def binaryOr(a:Term, b:Term) : Term = apply(OMS(orCon),List(a,b):_*)
+  object naryOrSym extends BinaryLFConstantScala(MizarTh, "nary_or")
+  object Or {
+    def apply(tms: List[Term]) = naryOrSym(OMI(tms.length), Sequence(tms))
 
-  // Special function for 'and' and 'or' applied to an sequence (e.g. Ellipsis or sequence variable)
-  def seqConn(connective : String, length : Term, seq : Term) : Term =
-    apply(constant(connective), length, seq)
-
+    def unapply(t: Term) = t match {
+      case naryOrSym(OMI(n), Sequence(tms)) if (n == tms.length) => Some(tms)
+      case _ => None
+    }
+  }
+  def binaryOr(a:Term, b:Term) : Term = Or(List(a,b))
 
   def trueCon = constant("true")
   def falseCon = constant("false")
@@ -105,6 +112,8 @@ object Mizar {
   object not extends UnaryLFConstantScala(MizarTh, "not")
   def eqCon = constantName("eq")
   object eq extends BinaryLFConstantScala(eqCon.module, "eq")
+  def neqCon = constantName("neq")
+  object neq extends BinaryLFConstantScala(MizarTh, "inequal")
 
   class Quantifier(n: String) {
     def apply(v : OMV, univ : Term, prop : Term) = ApplySpine(OMS(constantName(n)), univ, Lambda(v % Mizar.any, prop))
@@ -117,10 +126,18 @@ object Mizar {
   object forall extends Quantifier("for")
   object exists extends Quantifier("ex")
 
-  object proof extends UnaryLFConstantScala(MizarTh, "proof")
-
-
-  //     OMBIND(apply(Mizar.constant("for"), tp),Context(VarDecl(LocalName(v), Some(Mizar.any), None, None)), prop)
+  object proof extends UnaryLFConstantScala(ProofsTh, "proof")
+  object Uses extends TernaryLFConstantScala(MizarTh, "using")
+  object Exemplification extends BinaryLFConstantScala(MizarTh, "proofByExample")
+  def uses(claim: Term, usedFacts: List[Term]) = Uses(claim, OMI(usedFacts.length), Sequence(usedFacts))
+  def exemplification(tp: Term, tm: Term) = Exemplification(tp, tm)
+  def zeroAryAndPropCon = constant("0ary_and_prop")
+  object oneAryAndPropCon extends UnaryLFConstantScala(MizarTh, "1ary_and_prop")
+  object andInductPropCon extends TernaryLFConstantScala(MizarTh, "and_induct_prop")
+  def consistencyTp(argTps: List[Term], cases: List[Term], caseRes: List[Term], direct: Boolean, resKind: String) = {
+    val suffix = if (direct) "Dir" else "Indir" + resKind
+    ApplyGeneral(OMS(MizarPatternsTh ? LocalName("consistencyTp"+suffix )), List(OMI(argTps.length), Sequence(argTps), OMI(cases.length), Sequence(cases), Sequence(caseRes)))
+  }
 
   def attr(t : Term) = apply(Mizar.constant("attr"), t)
   def adjective(cluster : Term, typ : Term) = apply(Mizar.constant("adjective"), typ, cluster)
@@ -185,22 +202,6 @@ object Mizar {
 
 object MMTUtils {
   val mainPatternName = OMV.anonymous
-
-  def getTheoryPath(aid: String): MPath = {
-    if (aid == TranslationController.currentAid)
-      TranslationController.currentTheoryPath
-    else aid match {
-      case "HIDDEN" => Mizar.HiddenTh
-      case _ => DPath(Mizar.mmlBase) ? aid
-    }
-  }
-
-  def getPath(aid: String, kind: String, nr: Int): GlobalName = {
-    getTheoryPath(aid) ? (aid + "_" + kind + "_" + nr.toString)
-  }
-  def getPath(aid: String, name: String): GlobalName = {
-    getTheoryPath(aid) ? name
-  }
 
   def Lam(name: String, tp: Term, body: Term): Term = {
     Lambda(LocalName(name), tp, body)

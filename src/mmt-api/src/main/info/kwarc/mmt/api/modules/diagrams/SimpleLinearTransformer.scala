@@ -1,6 +1,5 @@
-package info.kwarc.mmt.api.modules.diagops
+package info.kwarc.mmt.api.modules.diagrams
 
-import info.kwarc.mmt.api.modules.DiagramInterpreter
 import info.kwarc.mmt.api.objects.Term
 import info.kwarc.mmt.api.symbols.{Constant, FinalConstant}
 import info.kwarc.mmt.api.{GeneralError, InvalidElement}
@@ -66,14 +65,14 @@ trait SimpleConstantsBasedModuleTransformer extends LinearFunctorialTransformer 
       return
     })
 
-    val tp = interp.ctrl.globalLookup.ExpandDefinitions(rawTp, state.skippedDeclarationPaths)
-    val df = c.df.map(interp.ctrl.globalLookup.ExpandDefinitions(_, state.skippedDeclarationPaths))
+    val tp = interp.ctrl.library.ExpandDefinitions(rawTp, state.skippedDeclarationPaths)
+    val df = c.df.map(interp.ctrl.library.ExpandDefinitions(_, state.skippedDeclarationPaths))
 
     applyConstantSimple(c, tp, df).foreach(interp.add)
   }
 }
 
-trait SimpleLinearModuleTransformer extends SimpleConstantsBasedModuleTransformer with DefaultLinearStateOperator {}
+trait SimpleLinearModuleTransformer extends SimpleConstantsBasedModuleTransformer with DefaultLinearStateOperator
 
 trait SimpleLinearConnectorTransformer extends LinearConnectorTransformer with DefaultLinearStateOperator {
 
@@ -92,8 +91,8 @@ trait SimpleLinearConnectorTransformer extends LinearConnectorTransformer with D
       return
     })
 
-    val tp = interp.ctrl.globalLookup.ExpandDefinitions(rawTp, state.skippedDeclarationPaths)
-    val df = c.df.map(interp.ctrl.globalLookup.ExpandDefinitions(_, state.skippedDeclarationPaths))
+    val tp = interp.ctrl.library.ExpandDefinitions(rawTp, state.skippedDeclarationPaths)
+    val df = c.df.map(interp.ctrl.library.ExpandDefinitions(_, state.skippedDeclarationPaths))
 
     val outConstants = applyConstantSimple(c, tp, df)
     outConstants.foreach(interp.add)

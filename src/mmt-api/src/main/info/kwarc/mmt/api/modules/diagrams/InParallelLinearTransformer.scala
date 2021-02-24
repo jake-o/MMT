@@ -1,33 +1,37 @@
-package info.kwarc.mmt.api.modules.diagops
+package info.kwarc.mmt.api.modules.diagrams
 
-import info.kwarc.mmt.api.MPath
-import info.kwarc.mmt.api.modules.{DiagramInterpreter, Module, ModuleOrLink}
+import info.kwarc.mmt.api.modules.ModuleOrLink
 import info.kwarc.mmt.api.symbols.{Constant, Declaration, IncludeData}
 
 import scala.collection.mutable
 
-class InParalleLinearTransformer(transformers: List[LinearTransformer]) extends LinearTransformer {
+/**
+  * Transforms a diagram by multiple linear transformers in parallel,
+  * which are all run step-by-step.
+  *
+  * Upon a declaration `d`, first all transformers are run on `d`, and only
+  * then is the next declaration considered.
+  *
+  * This is useful when linear transformers are interdependent, as is the case
+  * in [[PushoutOperator]], for example.
+  *
+  * TODO (WARNING): the input diagram must be ordered by dependency already due to implementation details.
+  */
+class InParallelLinearTransformer(transformers: List[LinearTransformer]) extends LinearTransformer {
   type DiagramState = TxAggregationDiagramState
   type LinearState = LinearTxAggregationState
 
-  override def initDiagramState(toplevelModules: Map[MPath, Module], interp: DiagramInterpreter): DiagramState = {
+  override def initDiagramState(diag: Diagram, interp: DiagramInterpreter): DiagramState = {
     val txDiagStates = transformers
       .map(tx => {
-        val diagState = tx.initDiagramState(toplevelModules, interp)
+        val diagState = tx.initDiagramState(diag, interp)
         diagState.asInstanceOf[LinearTransformer#LinearDiagramState]
       })
       .toArray
-    new TxAggregationDiagramState(toplevelModules, txDiagStates)
+    new TxAggregationDiagramState(diag, txDiagStates)
   }
 
-  class TxAggregationDiagramState(inputToplevelModules: Map[MPath, Module], val txDiagStates: Array[LinearTransformer#LinearDiagramState]) extends LinearDiagramState(inputToplevelModules) {
-    override def initAndRegisterNewLinearState(inContainer: Container): LinearTxAggregationState = {
-      txDiagStates.foreach(txDiagState =>
-        txDiagState.initAndRegisterNewLinearState(inContainer)
-      )
-      InParalleLinearTransformer.this.initLinearState(this, inContainer)
-    }
-  }
+  class TxAggregationDiagramState(diag: Diagram, val txDiagStates: Array[LinearTransformer#LinearDiagramState]) extends LinearDiagramState(diag)
 
   class LinearTxAggregationState(
                                   val txStates: Array[MinimalLinearState],
@@ -35,6 +39,11 @@ class InParalleLinearTransformer(transformers: List[LinearTransformer]) extends 
                                   override var inContainer: ModuleOrLink
                                 ) extends MinimalLinearState {
 
+    /**
+      * The [[transformers]] (by index) which signaled applicability
+      * on [[inContainer]] by their [[LinearTransformer.beginContainer()]] function
+      * having returned true.
+      */
     var applicableStates: mutable.Set[Int] = mutable.HashSet()
 
     override def registerDeclaration(decl: Declaration): Unit = {
@@ -57,10 +66,11 @@ class InParalleLinearTransformer(transformers: List[LinearTransformer]) extends 
   }
 
   override def initLinearState(diagramState: DiagramState, inContainer: Container): LinearState = {
-    val txStates = transformers.zip(diagramState.txDiagStates).map {
-      case (tx, txDiagState) =>
-        tx.initLinearState(txDiagState.asInstanceOf[tx.DiagramState], inContainer)
-    }.map(_.asInstanceOf[MinimalLinearState]).toArray
+    val txStates = diagramState.txDiagStates
+      .toList // without this, scalac complains about "missing class tag"
+      .map(_.initAndRegisterNewLinearState(inContainer))
+      .map(_.asInstanceOf[MinimalLinearState])
+      .toArray
 
     new LinearTxAggregationState(txStates, diagramState, inContainer)
   }
@@ -78,7 +88,7 @@ class InParalleLinearTransformer(transformers: List[LinearTransformer]) extends 
     foreachTransformer((tx, txState, i) => {
       if (tx.beginContainer(inContainer, txState.asInstanceOf[tx.LinearState])) {
           state.applicableStates += i
-        }
+      }
     })(state)
 
     true
@@ -93,9 +103,9 @@ class InParalleLinearTransformer(transformers: List[LinearTransformer]) extends 
   }
 
   override def applyDeclaration(decl: Declaration, container: Container)(implicit state: LinearState, interp: DiagramInterpreter): Unit = {
-    foreachTransformer((tx, txState, i) => {
+    foreachTransformer((tx, txState_, i) => {
       if (state.applicableStates.contains(i)) {
-        tx.applyDeclaration(decl, container)(txState.asInstanceOf[tx.LinearState], interp)
+        tx.applyDeclaration(decl, container)(txState_.asInstanceOf[tx.LinearState], interp)
       }
     })(state)
   }
@@ -104,14 +114,33 @@ class InParalleLinearTransformer(transformers: List[LinearTransformer]) extends 
 
   override def applyIncludeData(include: IncludeData, container: Container)(implicit state: LinearState, interp: DiagramInterpreter): Unit = { require(requirement = false, "unreachable") }
 
-  override def applyDiagram(modulePaths: List[MPath])(implicit interp: DiagramInterpreter): List[MPath] = {
-    val modules: Map[MPath, Module] = modulePaths.map(p => (p, interp.ctrl.getModule(p))).toMap
-    val state = initDiagramState(modules, interp)
+  override def beginDiagram(diag: Diagram)(implicit interp: DiagramInterpreter): Boolean = {
+    transformers.forall(_.beginDiagram(diag))
+  }
 
-    modulePaths.map(interp.ctrl.getModule).foreach(module => {
-      applyContainer(module)(state, interp)
-    })
+  override def endDiagram(diag: Diagram)(implicit interp: DiagramInterpreter): Unit = {
+    transformers.foreach(_.endDiagram(diag))
+  }
 
-    transformers.flatMap(_.applyDiagram(modulePaths))
+  override def applyDiagram(diag: Diagram)(implicit interp: DiagramInterpreter): Option[Diagram] = {
+    val state = initDiagramState(diag, interp)
+
+    if (beginDiagram(diag)) {
+      diag.modules.map(interp.ctrl.getModule).foreach(module => {
+        applyContainer(module)(state, interp)
+      })
+
+      // TODO: hacky workaround here by Navid:
+      //   to collect all output diagrams, we employ the hack to call applyDiagram
+      //   on every transformer. This assumes that things are not recomputed, otherwise we're
+      //   pretty inefficient
+      val outDiagram = Diagram.union(transformers.flatMap(_.applyDiagram(diag)))(interp.ctrl.library)
+
+      endDiagram(diag)
+
+      Some(outDiagram)
+    } else {
+      None
+    }
   }
 }

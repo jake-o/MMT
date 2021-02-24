@@ -1,12 +1,14 @@
 package info.kwarc.mmt.mizar.newxml.translator
 
 import info.kwarc.mmt.api._
-import documents.Document
+import documents.{Document, MRef}
 import info.kwarc.mmt.api.modules.Theory
+import info.kwarc.mmt.api.objects._
+import info.kwarc.mmt.api.utils.FilePath
 import symbols.{Constant, Declaration, DerivedDeclaration}
 import info.kwarc.mmt.mizar.newxml.Main.makeParser
+import info.kwarc.mmt.mizar.newxml.mmtwrapper.MizarPatternInstance
 import info.kwarc.mmt.mizar.newxml.syntax._
-import info.kwarc.mmt.mizar.newxml.translator.definiensTranslator.assumptionTranslator
 
 
 object articleTranslator {
@@ -29,7 +31,6 @@ object itemTranslator {
         case funcDef: Functor_Definition => definitionTranslator.translate_Functor_Definition(funcDef)
         case pd: Predicate_Definition => definitionTranslator.translate_Predicate_Definition(pd)
       }
-      case existAss: Existential_Assumption => assumptionTranslator.translateAssumptions(existAss)
       case res: Reservation => translate_Reservation(res)
       case defIt: Definition_Item => translate_Definition_Item(defIt)
       case sectPragma: Section_Pragma => translate_Section_Pragma(sectPragma)
@@ -81,43 +82,44 @@ class MizarXMLImporter extends archives.Importer {
     TranslationController.currentAid = aid
     TranslationController.currentOutputBase = bf.narrationDPath.^!
 
-    //val doc = TranslationController.makeDocument()
-    val th = TranslationController.makeTheory()
+    val doc = TranslationController.makeDocument()
+    val thy = TranslationController.makeTheory()
 
-    articleTranslator.translateArticle(text_Proper)
+    try {
+      articleTranslator.translateArticle(text_Proper)
+    } catch {
+      case GetError(s) if (s.startsWith("no backend applicable to "+TranslationController.currentOutputBase.toString)) =>
+        val Array(dpath, name) = s.stripPrefix("no backend applicable to ").split('?')
+        val mpath = DPath(utils.URI(dpath)) ? name
+        println("GetError since we require the dependency theory "+mpath+" of the translated theory "+currentThy.name+" to be already translated: \n"+
+          "Please make sure the theory is translated (build with mizarxml-omdoc build target) and try again. ")
+        TranslationController.addUnresolvedDependency(mpath)
+    }
     log("INDEXING ARTICLE: " + bf.narrationDPath.last)
     TranslationController.endMake()
     log("The translated article " + bf.narrationDPath.last + ": ")
 
-    log("theory "+th.name)
-
-    def presentTm(tm: objects.Term): String = TranslationController.controller.presenter.asString(tm)
-
-    /**
-     * Presenter that also show notations
-     * @param d
-     * @return
-     */
-    def presentDecl(d: Declaration) : String = d match {
-      case c: Constant =>
-        c.name.toString+": "+presentTm(c.tp.get)+
-          (if (c.df.isDefined) {" | = "+presentTm(c.df.get)})+
-          (if (c.not.isDefined) {" | # "+c.not.get.toString})
-      case dd: DerivedDeclaration =>
-        TranslationController.controller.presenter.asString(dd)+
-          (if (dd.not.isDefined) {" | # "+dd.not.get.toString})
-    }
-
-    th.getDeclarations foreach {case decl: Declaration =>
-    try {
-        log(presentDecl(decl))
-      } catch {
-        case e: GeneralError =>
-          println("General error while presenting the declaration: "+decl.toString+": ")
-          println(e.toStringLong)
-          throw e
+    doc.getModules(TranslationController.controller.globalLookup) foreach {
+      case mpath: MPath => TranslationController.controller.getModule(mpath) match {
+        case th: Theory => log("theory " + th.name)
+        th.getDeclarations foreach {
+          case decl: Declaration =>
+            try {
+              log(TranslationController.controller.presenter.asString(decl))
+            } catch {
+              case e: GetError =>
+              case e: GeneralError =>
+                println("General error while presenting the declaration: " + decl.toString + ": ")
+                println(e.toStringLong)
+                throw e
+            }
+        }
       }
     }
-    TranslationController.currentDoc//currentThy.asDocument
+    val unres = TranslationController.getUnresolvedDependencies()
+    if (unres.nonEmpty) {println("Unresolved dependencies: "+unres.map(_.name))}
+    val deps = TranslationController.getDependencies()
+    if (deps.nonEmpty) {println("Resolved dependencies: "+deps.map(_.name))}
+    TranslationController.currentDoc
   }
 }

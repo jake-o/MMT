@@ -2,7 +2,7 @@ package info.kwarc.mmt.odk.diagops
 
 import info.kwarc.mmt.api._
 import info.kwarc.mmt.api.modules._
-import info.kwarc.mmt.api.modules.diagops._
+import info.kwarc.mmt.api.modules.diagrams._
 import info.kwarc.mmt.api.objects._
 import info.kwarc.mmt.api.symbols.Constant
 import info.kwarc.mmt.api.utils.UnicodeStrings
@@ -17,8 +17,8 @@ import info.kwarc.mmt.odk.LFX.RecExp
 object HomOperator extends SimpleLinearOperator with OperatorDSL {
   override val head: GlobalName = Path.parseS("latin:/algebraic/diagop-test?AlgebraicDiagOps?hom_operator")
 
-  override val operatorDomain: DiagramT = DiagramT.singleton(SFOL.sfoleqnd)
-  override val operatorCodomain: DiagramT = DiagramT.singleton(SFOL.sfoleqnd)
+  override val operatorDomain: Diagram = Diagram.singleton(SFOL.sfoleqnd)
+  override val operatorCodomain: Diagram = Diagram.singleton(SFOL.sfoleqnd)
 
   // Hom(-) copies every input constant to two systematically renamed copies for domain and codomain of the homomorphism
   val dom: Renamer[LinearState] = getRenamerFor("ᵈ")
@@ -49,13 +49,13 @@ object HomOperator extends SimpleLinearOperator with OperatorDSL {
         )
 
         // construct `c^{dom} x_1 ... x_n`
-        val lhs = ApplySpine.applyOrSymbol(
+        val lhs = ApplySpine.orSymbol(
           dom(c),
           forallContext.map(_.toTerm) : _*
         )
 
         // construct `c^{cod} (c^h x_1) ... (c^h x_n)`
-        val rhs = ApplySpine.applyOrSymbol(
+        val rhs = ApplySpine.orSymbol(
           cod(c),
           forallContext.map(_.toTerm).zipWithIndex.map {
             case (t, idx) => ApplySpine(OMS(hom(argTypes(idx))), t)

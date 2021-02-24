@@ -1,7 +1,7 @@
-package info.kwarc.mmt.api.modules.diagops
+package info.kwarc.mmt.api.modules.diagrams
 
 import info.kwarc.mmt.api.libraries.Lookup
-import info.kwarc.mmt.api.modules.{DiagramInterpreter, DiagramT, Module, Theory, View}
+import info.kwarc.mmt.api.modules.{Module, Theory, View}
 import info.kwarc.mmt.api.objects.{OMIDENT, OMMOD, Term}
 import info.kwarc.mmt.api.symbols.{Constant, IncludeData, Structure, TermContainer}
 import info.kwarc.mmt.api.{InvalidElement, LocalName, MPath}
@@ -65,8 +65,8 @@ trait LinearFunctorialTransformer extends LinearModuleTransformer with RelativeB
   protected def beginTheory(thy: Theory, state: LinearState)(implicit interp: DiagramInterpreter): Option[Theory] = {
     val outPath = applyModulePath(thy.path)
     val newMeta = thy.meta.map {
-      case mt if operatorDomain.hasImplicitFrom(mt)(interp.ctrl.globalLookup) =>
-        applyMetaModule(OMMOD(mt)).toMPath
+      case mt if operatorDomain.hasImplicitFrom(mt)(interp.ctrl.library) =>
+        applyMetaModule(OMMOD(mt))(interp.ctrl.globalLookup).toMPath
       case mt =>
         if (applyModule(interp.ctrl.getModule(mt))(state.diagramState, interp).isEmpty) {
           interp.errorCont(InvalidElement(thy, s"Theory had meta theory `$mt` for which there " +
@@ -131,18 +131,19 @@ trait LinearFunctorialTransformer extends LinearModuleTransformer with RelativeB
     */
   protected def beginStructure(s: Structure, state: LinearState)(implicit interp: DiagramInterpreter): Option[Structure] = s.tp.flatMap {
     case OMMOD(structureDomain) =>
-      if (!applyContainer(interp.ctrl.getModule(structureDomain))(state.diagramState, interp)) {
+      val newStructureDomain = applyModule(interp.ctrl.getModule(structureDomain))(state.diagramState, interp).getOrElse(
         return None
-      }
+      )
 
       // inherit linear state from module where structure is declared
       state.inherit(state.diagramState.getLinearState(s.home.toMPath))
 
-      // TODO: s.dfC is thrown away
+      // TODO: s.dfC is thrown away/ignored
       val outStructure = new Structure(
         home = OMMOD(applyModulePath(s.path.module)),
         name = s.name,
-        TermContainer.asAnalyzed(OMMOD(applyModulePath(structureDomain))), TermContainer.empty(),
+        tpC = TermContainer.asAnalyzed(newStructureDomain.toTerm),
+        dfC = TermContainer.empty(),
         s.isImplicit, s.isTotal
       )
       interp.add(outStructure)
@@ -174,7 +175,7 @@ trait LinearFunctorialTransformer extends LinearModuleTransformer with RelativeB
       diagramState.seenModules += inModule.path
 
       diagramState.processedElements.put(inModule.path, outModule)
-      if (diagramState.inputToplevelModules.contains(inModule.path)) {
+      if (diagramState.inputDiagram.modules.contains(inModule.path)) {
         interp.addToplevelResult(outModule)
       }
 
@@ -217,9 +218,9 @@ trait LinearFunctorialTransformer extends LinearModuleTransformer with RelativeB
     *   ?v                    |-> ?op(v)                   if ?v is in input diagram
     * }}}
     */
-  final override def applyIncludeData(include: IncludeData, container: Container)(implicit state: LinearState, interp: DiagramInterpreter): Unit = {
+  override def applyIncludeData(include: IncludeData, container: Container)(implicit state: LinearState, interp: DiagramInterpreter): Unit = {
     val ctrl = interp.ctrl
-    implicit val lookup: Lookup = ctrl.globalLookup
+    implicit val library: Lookup = ctrl.library
     implicit val diagramState: DiagramState = state.diagramState
 
     if (include.args.nonEmpty) ???
@@ -237,10 +238,10 @@ trait LinearFunctorialTransformer extends LinearModuleTransformer with RelativeB
 
         applyModulePath(from)
 
-      case _ =>
-        interp.errorCont(InvalidElement(container, "Cannot handle include (or structure) of " +
-          s"`${include.from}`: unbound in input diagram, leaving as-is"))
-        include.from
+      case from =>
+        interp.errorCont(InvalidElement(container, s"Origin ('from') `$from` of include or structure unbound " +
+          "in input diagram, leaving as-is"))
+        from
     }
 
     val newDf: Option[Term] = include.df.map {
@@ -263,7 +264,10 @@ trait LinearFunctorialTransformer extends LinearModuleTransformer with RelativeB
         }
 
         OMMOD(applyModulePath(dfPath))
-      case _ =>  ???
+      case df =>
+        interp.errorCont(InvalidElement(container, s"Definiens `$df` of include or structure unbound in input " +
+          s"diagram, leaving as-is"))
+        df
     }
 
     val s = Structure(
@@ -274,8 +278,13 @@ trait LinearFunctorialTransformer extends LinearModuleTransformer with RelativeB
       isImplicit = if (container.isInstanceOf[Theory]) true else false,
       isTotal = include.total
     )
-    interp.add(s)
-    interp.endAdd(s)
+
+    // TODO hack to prevent: "add error: a declaration for the name [...] already exists [...]"
+    //      when refactoring the whole framework, we should fix this anyway in the course of doing so
+    if (ctrl.getO(s.path).isEmpty) {
+      interp.add(s)
+      interp.endAdd(s)
+    }
   }
 }
 
@@ -285,15 +294,15 @@ object LinearFunctorialTransformer {
     *
     * Its purpose is to serve for the `in` or `out` field of [[LinearConnectorTransformer]]s.
     */
-  def identity(domain: DiagramT): LinearFunctorialTransformer = new LinearFunctorialTransformer with DefaultLinearStateOperator {
-    override val operatorDomain: DiagramT = domain
-    override val operatorCodomain: DiagramT = domain
-    override def applyMetaModule(m: Term): Term = m
+  def identity(domain: Diagram): LinearFunctorialTransformer = new LinearFunctorialTransformer with DefaultLinearStateOperator {
+    override val operatorDomain: Diagram = domain
+    override val operatorCodomain: Diagram = domain
+    override def applyMetaModule(m: Term)(implicit lookup: Lookup): Term = m
 
     override def applyModuleName(name: LocalName): LocalName = name
 
     override def applyConstant(c: Constant, container: Container)(implicit state: SkippedDeclsExtendedLinearState, interp: DiagramInterpreter): Unit = {}
   }
 
-  def identity(domainTheory: MPath): LinearFunctorialTransformer = identity(DiagramT(List(domainTheory), None))
+  def identity(domainTheory: MPath): LinearFunctorialTransformer = identity(Diagram(List(domainTheory), None))
 }
