@@ -94,10 +94,7 @@ object MagicTest {
       home / "content", // Michael
       home / "Versioned" / "Archives", // Katja
       home / "mmt" / "content", // Frederik
-
-      //File("C:/mmt2/content/Mathhub"), //Max
-      File("C:") / "/mmt2" / "/content" / "/MathHub", // Max
-      File("C:") / "Users" / "Max" / "Uni" / "MMT-Archives", // Max
+      File("C:\\") / "Users" / "Max" / "Uni" / "MMT-Archives", // Max
       File("C:") / "other" / "oaff",
       home / "MMT" / "myformalizations", // Max Mac
 
@@ -105,7 +102,10 @@ object MagicTest {
       home / "Desktop" / "mmt-archives",
 
       //Luca
-      File("X:") / "/Media" / "Documents" / "MMT-Archives"
+      File("X:") / "/Media" / "Documents" / "MMT-Archives",
+
+      // John
+      home / "Documents" / "mmt_and_archives" / "archives"
     ).find(_.exists).getOrElse(throw GeneralError("MagicTest failed: No known archive root"))
   }
 
@@ -179,6 +179,6 @@ abstract class MagicTest(prefixes: String*) extends Test(
   }
 
   final protected def space(): Unit = {
-    print("\n".repeat(5))
+    (1 to 5).foreach(_ => print("\n"))
   }
 }
